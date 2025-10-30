@@ -22,6 +22,34 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
+# --- DEBUG: בדיקת st.secrets (אין כאן הדפסת ערכים סודיים) ---
+def debug_show_secrets_info():
+    try:
+        keys = list(st.secrets.keys())
+    except Exception as e:
+        st.error("st.secrets אינו זמין: " + str(e))
+        return
+
+    st.write("DEBUG: מפתחות שנמצאים ב-st.secrets (שמות בלבד):", keys)
+
+    # בדיקה מדויקת של SPREADSHEET_ID (גם אם הוזן באותיות קטנות/גדולות)
+    found_key = None
+    for k in keys:
+        if k.upper() == "SPREADSHEET_ID":
+            found_key = k
+            break
+
+    st.write("SPREADSHEET_ID נמצא בדיוק בשם 'SPREADSHEET_ID'?", "SPREADSHEET_ID" in st.secrets)
+    st.write("SPREADSHEET_ID נמצא לפי נרמול (case-insensitive)?", found_key is not None)
+    if found_key:
+        val = st.secrets[found_key]
+        st.write("הטיפוס של הערך המאוחסן:", type(val).__name__, "| אורך המחרוזת (לא מוצג הערך):", len(str(val)))
+        st.write("הערך ריק אחרי trim?", str(val).strip() == "")
+    else:
+        st.info("לא נמצאה מחרוזת עם שם SPREADSHEET_ID. בדוק ששמת בדיוק את המפתח 'SPREADSHEET_ID' ב-Secrets של אותה אפליקציה.")
+# קריאה
+debug_show_secrets_info()
+
 
 # ---------- Google Sheets helpers ----------
 def init_gs():
@@ -428,32 +456,4 @@ elif page == "סיכומים והגדרות":
 
 st.markdown("---")
 st.caption("אם תתקע — שלח לי תמונה/העתק מה־Secrets או שורות השגיאה ואעזור מיד.")
-
-# --- DEBUG: בדיקת st.secrets (אין כאן הדפסת ערכים סודיים) ---
-def debug_show_secrets_info():
-    try:
-        keys = list(st.secrets.keys())
-    except Exception as e:
-        st.error("st.secrets אינו זמין: " + str(e))
-        return
-
-    st.write("DEBUG: מפתחות שנמצאים ב-st.secrets (שמות בלבד):", keys)
-
-    # בדיקה מדויקת של SPREADSHEET_ID (גם אם הוזן באותיות קטנות/גדולות)
-    found_key = None
-    for k in keys:
-        if k.upper() == "SPREADSHEET_ID":
-            found_key = k
-            break
-
-    st.write("SPREADSHEET_ID נמצא בדיוק בשם 'SPREADSHEET_ID'?", "SPREADSHEET_ID" in st.secrets)
-    st.write("SPREADSHEET_ID נמצא לפי נרמול (case-insensitive)?", found_key is not None)
-    if found_key:
-        val = st.secrets[found_key]
-        st.write("הטיפוס של הערך המאוחסן:", type(val).__name__, "| אורך המחרוזת (לא מוצג הערך):", len(str(val)))
-        st.write("הערך ריק אחרי trim?", str(val).strip() == "")
-    else:
-        st.info("לא נמצאה מחרוזת עם שם SPREADSHEET_ID. בדוק ששמת בדיוק את המפתח 'SPREADSHEET_ID' ב-Secrets של אותה אפליקציה.")
-# קריאה
-debug_show_secrets_info()
 
