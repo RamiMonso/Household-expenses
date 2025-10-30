@@ -49,6 +49,22 @@ def debug_show_secrets_info():
         st.info("לא נמצאה מחרוזת עם שם SPREADSHEET_ID. בדוק ששמת בדיוק את המפתח 'SPREADSHEET_ID' ב-Secrets של אותה אפליקציה.")
 # קריאה
 debug_show_secrets_info()
+# --- DEBUG VERBOSE: מציג שמות keys עם repr ו-ord כדי לגלות תווים מוסתרים ---
+def debug_show_secrets_verbose():
+    try:
+        keys = list(st.secrets.keys())
+    except Exception as e:
+        st.error("st.secrets אינו זמין: " + str(e))
+        return
+    st.write("DEBUG: keys count =", len(keys))
+    for i, k in enumerate(keys):
+        st.write(f"#{i+1} key repr():", repr(k))
+        # הצגת אורד (מספרים) של התווים - זה יחשוף תווי רווח/שורות בלתי נראים
+        ords = [ord(ch) for ch in k]
+        st.write("   chars and ords (first 50):", list(zip(list(k)[:50], ords[:50])))
+        st.write("   length:", len(k))
+debug_show_secrets_verbose()
+# --- סוף ה-DEBUG VERBOSE ---
 
 
 # ---------- Google Sheets helpers ----------
