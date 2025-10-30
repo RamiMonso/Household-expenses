@@ -23,16 +23,109 @@ SCOPES = [
 
 # ---------- Google Sheets helpers ----------
 @st.cache_resource(show_spinner=False)
-def init_gs():
-    """יוצר ומחזיר את האובייקט gspread (client) מחיבור ל-Google Sheets"""
-    if "gcp_service_account" not in st.secrets or "SPREADSHEET_ID" not in st.secrets:
-        st.error("יש להגדיר את המפתחות ב-Streamlit Secrets (ראו המדריך).")
+# --- החלף את init_gs() בקוד זה --- (DEBUG-וגמיש)
+import json
+import gspread
+from google.oauth2.service_account import Credentials
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+def init_gs_debug():
+    st.write("DEBUG: בודק st.secrets...")
+    try:
+        keys = list(st.secrets.keys())
+        st.write("DEBUG: מפתחות שנמצאים ב-st.secrets (רק שמות):", keys)
+    except Exception as e:
+        st.error("st.secrets אינו זמין או ריק. ודא שהכנסת את ה-Secrets לאותה אפליקציה ב-Streamlit Cloud.")
         st.stop()
-    creds_info = st.secrets["gcp_service_account"]
-    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(st.secrets["SPREADSHEET_ID"])
-    return sheet
+
+    # האם יש SPREADSHEET_ID?
+    if "SPREADSHEET_ID" not in st.secrets:
+        st.error("SPREADSHEET_ID לא נמצא ב-st.secrets. ודא שהכנסת את מזהה הגיליון (רק ה-ID).")
+        st.stop()
+    else:
+        st.write("SPREADSHEET_ID נמצא (לא נחשף כאן).")
+
+    # נסה לקרוא את ה-service account בצורות שונות:
+    creds_info = None
+    # 1) האם הכנסת מילון בשם gcp_service_account ?
+    if "gcp_service_account" in st.secrets:
+        candidate = st.secrets["gcp_service_account"]
+        if isinstance(candidate, str):
+            st.write("gcp_service_account נמצא אך הוא מחרוזת (כנראה JSON) — אנסה להמיר באמצעות json.loads...")
+            try:
+                creds_info = json.loads(candidate)
+                st.write("המרת מחרוזת ל־JSON הצליחה.")
+            except Exception as e:
+                st.error("לא הצלחנו לפענח את ה־gcp_service_account כמחרוזת JSON. אם הדבקת את ה-JSON כמחרוזת, בדוק את הפורמט או השתמש ב-gcp_service_account_json.")
+                st.stop()
+        elif isinstance(candidate, dict):
+            st.write("gcp_service_account נמצא כמבנה (dict) — פורמט טוב.")
+            creds_info = candidate
+        else:
+            st.error(f"gcp_service_account קיים אבל מסוג לא נתמך: {type(candidate)}")
+            st.stop()
+
+    # 2) אם לא — האם הכנסת את כל ה־JSON תחת מפתח אחר כמו gcp_service_account_json ?
+    elif "gcp_service_account_json" in st.secrets:
+        st.write("נמצא key בשם gcp_service_account_json — אנסה לטעון JSON ממנו.")
+        raw = st.secrets["gcp_service_account_json"]
+        try:
+            creds_info = json.loads(raw)
+            st.write("המרת gcp_service_account_json ל־JSON הצליחה.")
+        except Exception as e:
+            st.error("לא הצלחנו לפענח את gcp_service_account_json כ־JSON. ודא שהדבקת את תוכן הקובץ JSON במלואו (כולל שורות ה-private_key).")
+            st.stop()
+    else:
+        st.error("לא נמצא מפתח service account ב-st.secrets בשם gcp_service_account או gcp_service_account_json.")
+        st.stop()
+
+    # לבדוק שדות מינימום בקובץ ה־creds (בלי להדפיס ערכים סודיים)
+    required_fields = ["client_email", "private_key", "project_id"]
+    missing = [f for f in required_fields if f not in creds_info]
+    if missing:
+        st.error(f"חסרים שדות חיוניים ב-creds: {missing}. ודא שהדבקת את ה-service account ה-JSON המלא.")
+        st.stop()
+    else:
+        st.write("creds מכיל את שדות המינימום (client_email, private_key, project_id).")
+
+    # ניסיון לבנות Credentials ולהתחבר
+    try:
+        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    except Exception as e:
+        st.error("שגיאה ביצירת Credentials.from_service_account_info — כנראה ה-private_key לא בפורמט הנכון. וודא שהשדה private_key כולל את כל שורות המפתח (-----BEGIN PRIVATE KEY----- ...).")
+        st.write("שגיאת מערכת (קוד):", str(e))
+        st.stop()
+
+    try:
+        client = gspread.authorize(creds)
+    except Exception as e:
+        st.error("שגיאה בהרשאת gspread (gspread.authorize) — ייתכן שהמפתחות לא תקינים או שיש בעיה ברשת/הרשאות.")
+        st.write("שגיאת מערכת (קוד):", str(e))
+        st.stop()
+
+    # נסה לפתוח את ה-Spreadsheet
+    sheet_id = st.secrets["SPREADSHEET_ID"]
+    try:
+        sh = client.open_by_key(sheet_id)
+        st.success("חיבור ל-Google Sheets הצליח — גיליון נפתח בהצלחה.")
+        return sh
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("גיליון לא נמצא עם ה-SPREADSHEET_ID שסיפקת. ודא שה-SPREADSHEET_ID נכון וששיתפת את הגיליון עם כתובת ה-service account (client_email).")
+        # הדפס את הכתובת של ה-service account (למשל לצורך שיתוף) — לא חושף פרטי private_key
+        st.write("כתובת Service account (לשיתוף בגיליון):", creds_info.get("client_email", "<לא זמין>"))
+        st.stop()
+    except Exception as e:
+        st.error("שגיאה בפתיחת הגיליון — ראו קוד השגיאה למטה.")
+        st.write("שגיאת מערכת (קוד):", str(e))
+        st.stop()
+
+# שימוש: במקום init_gs() תקרא init_gs_debug()
+# sheet = init_gs_debug()
+
 
 def ensure_worksheet(sh, name, headers):
     """מבטיח שיש גיליון בשם name עם headers (יוצר אם לא קיים). לא מוחק נתונים קיימים."""
