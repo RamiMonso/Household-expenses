@@ -1,234 +1,263 @@
-"""
-Streamlit Expense Manager - single-file app
-Requirements: streamlit, gspread, google-auth, pandas
+# קבצים לפרויקט: Streamlit Home Expense Manager
 
-How this file expects secrets (set in Streamlit Cloud > Secrets):
-- GOOGLE_SHEET_KEY: the Google Sheets spreadsheet ID
-- GCP_SERVICE_ACCOUNT: the full service account JSON as a single-line string (JSON text). Example value: '{"type": "service_account", "project_id": ... }'
+להלן כל הקבצים שתצטרך להעתיק/להעלות ל- GitHub לפני פריסה ל-Streamlit Cloud. הקבצים מסומנים בקווים המפרידים ובשם הקובץ.
 
-The app will ensure the following worksheets exist and create them if missing:
-- Budgets  (header: Week1,Week2,Week3,Week4,Week5,Misc_Budget,Month,Updated)
-- Week1, Week2, Week3, Week4, Week5, Misc  (header: Timestamp,Description,Amount)
+---
 
-Usage: paste this file into your repo as streamlit_app.py and deploy to Streamlit Cloud.
-"""
+## FILE: streamlit_app.py
 
+```python
+# -*- coding: utf-8 -*-
 import streamlit as st
 import gspread
-import json
 from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import datetime
 
-# ----------------- CONFIG -----------------
-WEEK_SHEETS = [f"Week{i}" for i in range(1,6)]
-MISC_SHEET = "Misc"
-BUDGET_SHEET = "Budgets"
-SCOPE = [
+st.set_page_config(page_title="ניהול הוצאות ביתיות", layout="centered")
+
+SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-# ----------------- GSheets HELPERS -----------------
 @st.cache_resource
-def get_gspread_client():
-    # Expect secrets: GCP_SERVICE_ACCOUNT (JSON string), GOOGLE_SHEET_KEY
-    if "GCP_SERVICE_ACCOUNT" not in st.secrets:
-        st.error("Missing secret: GCP_SERVICE_ACCOUNT. See setup instructions in repo README.")
-        st.stop()
-    if "GOOGLE_SHEET_KEY" not in st.secrets:
-        st.error("Missing secret: GOOGLE_SHEET_KEY. Add the spreadsheet ID in Streamlit secrets.")
-        st.stop()
-
-    creds_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
-    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
+def connect_sheet():
+    # מחלץ את פרטי החשבון משדות הסודות של Streamlit (secrets)
+    creds_info = st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
     gc = gspread.authorize(creds)
-    sh = gc.open_by_key(st.secrets["GOOGLE_SHEET_KEY"])  # may raise error if key wrong
+    sh = gc.open_by_key(st.secrets["gsheet_key"])
     return sh
 
+# שמות גליונות (worksheets)
+BUDGET_SHEET = "budgets"      # גיליון שבו מאוחסנים התקציבים
+WEEK_SHEETS = [f"week_{i}" for i in range(1,6)]
+OTHER_SHEET = "other_expenses"
 
-def ensure_sheets(sh):
-    # create necessary worksheets if missing
+# פונקציות עזר
+
+def ensure_sheets_exist(sh):
+    # יוצר גיליונות במידת הצורך ומאתחל כותרות
     existing = {ws.title for ws in sh.worksheets()}
-    # Budgets
+
     if BUDGET_SHEET not in existing:
-        sh.add_worksheet(title=BUDGET_SHEET, rows=10, cols=20)
+        sh.add_worksheet(title=BUDGET_SHEET, rows=10, cols=10)
         ws = sh.worksheet(BUDGET_SHEET)
-        headers = ["Week1","Week2","Week3","Week4","Week5","Misc_Budget","Month","Updated"]
+        headers = ["month_name", "week1", "week2", "week3", "week4", "week5", "other_budget"]
         ws.append_row(headers)
-        # append an initial zero row
-        ws.append_row([0,0,0,0,0,0, datetime.now().strftime("%Y-%m") , datetime.now().isoformat()])
-    # weeks + misc
-    for name in WEEK_SHEETS + [MISC_SHEET]:
+        # ערכים ברירת מחדל (ריקים)
+        ws.append_row([datetime.now().strftime("%B %Y"), "", "", "", "", "", ""])
+
+    for name in WEEK_SHEETS + [OTHER_SHEET]:
         if name not in existing:
-            sh.add_worksheet(title=name, rows=1000, cols=10)
+            sh.add_worksheet(title=name, rows=1000, cols=4)
             ws = sh.worksheet(name)
-            ws.append_row(["Timestamp","Description","Amount"])
+            ws.append_row(["timestamp", "description", "amount"])  # כותרות
 
 
 def read_budgets(sh):
     ws = sh.worksheet(BUDGET_SHEET)
     rows = ws.get_all_values()
     if len(rows) < 2:
-        return {f"Week{i+1}":0 for i in range(5)}, 0
+        return {f"week{i}": 0 for i in range(1,6)}, 0, datetime.now().strftime("%B %Y")
     headers = rows[0]
     values = rows[1]
-    d = {}
-    for h,v in zip(headers, values):
-        if h.startswith("Week") or h=="Misc_Budget":
-            try:
-                d[h] = float(v)
-            except:
-                d[h] = 0.0
-    month = values[headers.index("Month")] if "Month" in headers else datetime.now().strftime("%Y-%m")
-    return d, month
+    data = dict(zip(headers, values))
+    # המרה למספרים
+    weeks = {f"week{i}": float(data.get(f"week{i}", "0") or 0) for i in range(1,6)}
+    other_budget = float(data.get("other_budget", "0") or 0)
+    month_name = data.get("month_name", datetime.now().strftime("%B %Y"))
+    return weeks, other_budget, month_name
 
 
-def write_budgets(sh, budgets_dict, month=None):
+def update_budgets(sh, weeks_dict, other_budget, month_name=None):
     ws = sh.worksheet(BUDGET_SHEET)
-    headers = ws.row_values(1)
-    # prepare row aligned with headers
-    row = []
-    for h in headers:
-        if h in budgets_dict:
-            row.append(budgets_dict[h])
-        elif h=="Month":
-            row.append(month or datetime.now().strftime("%Y-%m"))
-        elif h=="Updated":
-            row.append(datetime.now().isoformat())
-        else:
-            row.append(0)
-    # clear existing rows 2.. and add new one
-    ws.resize(rows=2)
-    ws.delete_rows(2)
-    ws.append_row(row)
-
-
-def read_expenses(sh, sheet_name):
-    ws = sh.worksheet(sheet_name)
-    df = pd.DataFrame(ws.get_all_records())
-    if df.empty:
-        return df
-    # ensure Amount numeric
-    df["Amount"] = pd.to_numeric(df["Amount"], errors='coerce').fillna(0.0)
-    return df
+    headers = ["month_name", "week1", "week2", "week3", "week4", "week5", "other_budget"]
+    values = [month_name or datetime.now().strftime("%B %Y")] + [weeks_dict[f"week{i}"] for i in range(1,6)] + [other_budget]
+    ws.clear()
+    ws.append_row(headers)
+    ws.append_row(values)
 
 
 def append_expense(sh, sheet_name, description, amount):
     ws = sh.worksheet(sheet_name)
-    ts = datetime.now().isoformat(sep=' ', timespec='seconds')
-    ws.append_row([ts, description, amount], value_input_option='USER_ENTERED')
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ws.append_row([ts, description, float(amount)])
 
 
-def clear_expenses(sh, sheet_name):
+def read_expenses_df(sh, sheet_name):
     ws = sh.worksheet(sheet_name)
-    # clear all but header
+    rows = ws.get_all_records()
+    if not rows:
+        return pd.DataFrame(columns=["timestamp","description","amount"])
+    df = pd.DataFrame(rows)
+    df["amount"] = pd.to_numeric(df["amount"], errors='coerce').fillna(0)
+    return df
+
+
+def reset_all(sh):
+    # מנקה את גיליונות ההוצאות ומשחזרים כותרות
+    for name in WEEK_SHEETS + [OTHER_SHEET]:
+        ws = sh.worksheet(name)
+        ws.clear()
+        ws.append_row(["timestamp", "description", "amount"])
+    # מאתחל את גיליון התקציבים
+    ws = sh.worksheet(BUDGET_SHEET)
     ws.clear()
-    ws.append_row(["Timestamp","Description","Amount"])    
+    ws.append_row(["month_name", "week1", "week2", "week3", "week4", "week5", "other_budget"])
+    ws.append_row([datetime.now().strftime("%B %Y"), "", "", "", "", "", ""])
 
-# ----------------- BUSINESS LOGIC -----------------
 
-st.set_page_config(page_title="מנהל הוצאות ביתי", layout="centered")
-sh = get_gspread_client()
-ensure_sheets(sh)
+# --- התחלת החיבור ---
+try:
+    sh = connect_sheet()
+    ensure_sheets_exist(sh)
+except Exception as e:
+    st.error("שגיאה בחיבור לגוגל שיטס — בדוק את הסודות וההרשאות.\n" + str(e))
+    st.stop()
 
-budgets, current_month = read_budgets(sh)
+# ממשק ניווט בין העמודים
+page = st.radio("בחר עמוד:", ("הגדרת תקציב", "שבוע 1", "שבוע 2", "שבוע 3", "שבוע 4", "שבוע 5", "הוצאות שונות", "סיכום והגדרות"))
 
-PAGES = ["הגדרת תקציב שבועי"] + WEEK_SHEETS + ["הוצאות שונות","סיכומים והגדרות"]
-page = st.sidebar.radio("עמודים", PAGES)
+weeks, other_budget, month_name = read_budgets(sh)
 
-# ---------- Page: Budget setup ----------
-if page == "הגדרת תקציב שבועי":
-    st.header("הגדרת תקציב שבועי (5 שבועות)")
+if page == "הגדרת תקציב":
+    st.header("הגדרת תקציב שבועי")
+    st.write("הזן תקציב לכל אחת מחמשת השבועות (ניתן להשאיר ריק כדי לא לשנות)")
     with st.form("budget_form"):
-        cols = st.columns(2)
-        new_budgets = {}
-        for i in range(5):
-            with cols[i%2]:
-                v = st.number_input(f"תקציב שבוע {i+1}", min_value=0.0, value=float(budgets.get(f"Week{i+1}",0.0)), step=10.0, format="%.2f")
-                new_budgets[f"Week{i+1}"] = v
-        misc = st.number_input("תקציב להוצאות שונות", min_value=0.0, value=float(budgets.get("Misc_Budget",0.0)), step=10.0, format="%.2f")
-        new_budgets["Misc_Budget"] = misc
-        submitted = st.form_submit_button("שמור תקציבים")
-        if submitted:
-            write_budgets(sh, new_budgets)
-            st.success("תקציבים נשמרו בהצלחה")
+        w1 = st.number_input("תקציב שבוע 1", value=float(weeks["week1"] or 0), min_value=0.0, step=1.0)
+        w2 = st.number_input("תקציב שבוע 2", value=float(weeks["week2"] or 0), min_value=0.0, step=1.0)
+        w3 = st.number_input("תקציב שבוע 3", value=float(weeks["week3"] or 0), min_value=0.0, step=1.0)
+        w4 = st.number_input("תקציב שבוע 4", value=float(weeks["week4"] or 0), min_value=0.0, step=1.0)
+        w5 = st.number_input("תקציב שבוע 5", value=float(weeks["week5"] or 0), min_value=0.0, step=1.0)
+        ob = st.number_input("תקציב להוצאות שונות", value=float(other_budget or 0), min_value=0.0, step=1.0)
+        mn = st.text_input("שם החודש", value=month_name)
+        submit = st.form_submit_button("שמור תקציב")
+        if submit:
+            new_weeks = {f"week{i}": v for i, v in enumerate([w1,w2,w3,w4,w5], start=1)}
+            update_budgets(sh, new_weeks, ob, mn)
+            st.success("התקציב נשמר")
 
-# ---------- Pages: Week 1-5 and Misc ----------
-elif page in WEEK_SHEETS + ["הוצאות שונות"]:
-    if page == "הוצאות שונות":
-        sheet_name = MISC_SHEET
-    else:
-        sheet_name = page
-    st.header(f"הזנת הוצאות — {sheet_name}")
-    df = read_expenses(sh, sheet_name)
-    week_budget_key = None
-    if sheet_name.startswith("Week"):
-        week_budget_key = sheet_name
-    # show remaining budget
-    week_budget = budgets.get(week_budget_key, 0.0) if week_budget_key else budgets.get("Misc_Budget",0.0)
-    total_spent = float(df["Amount"].sum()) if not df.empty else 0.0
-    remaining = week_budget - total_spent
-    st.metric(label="יתרת שבוע/קטגוריה", value=f"{remaining:.2f}", delta=f"{ -total_spent:.2f}")
+elif page in [f"שבוע {i}" for i in range(1,6)]:
+    idx = int(page.split()[1])
+    sheet_name = f"week_{idx}"
+    st.header(f"הזנת הוצאות - שבוע {idx}")
+    df = read_expenses_df(sh, sheet_name)
+    remaining = float(weeks[f"week{idx}"]) - df["amount"].sum()
+    st.subheader(f"יתרת השבוע: {remaining:.2f}")
 
-    with st.form("expense_form"):
-        desc = st.text_input("פירוט הוצאה")
-        amt = st.number_input("סכום", min_value=0.0, step=1.0, format="%.2f")
-        add = st.form_submit_button("הוספת הוצאה")
+    with st.form("add_expense_form"):
+        desc = st.text_input("פירוט ההוצאה")
+        amt = st.number_input("סכום ששולם", min_value=0.0, step=1.0)
+        add = st.form_submit_button("הוסף הוצאה")
         if add:
-            if not desc:
-                st.error("יש להזין פירוט עבור ההוצאה")
-            else:
-                append_expense(sh, sheet_name, desc, amt)
-                st.success("הוצאה נוספה")
-                st.experimental_rerun()
+            append_expense(sh, sheet_name, desc, amt)
+            st.experimental_rerun()
 
+    st.markdown("---")
     st.subheader("טבלת הוצאות")
-    if df.empty:
-        st.info("טרם הוזנו הוצאות")
-    else:
-        st.dataframe(df.sort_values(by="Timestamp", ascending=False).reset_index(drop=True))
+    st.dataframe(df)
 
-# ---------- Page: Summary & Settings ----------
-elif page == "סיכומים והגדרות":
-    st.header("סיכומים והגדרות")
-    st.subheader(datetime.now().strftime("%B %Y"))
-    # monthly totals
-    all_dfs = {name: read_expenses(sh, name) for name in WEEK_SHEETS + [MISC_SHEET]}
-    total_month_budget = sum(budgets.get(f"Week{i+1}",0.0) for i in range(5)) + budgets.get("Misc_Budget",0.0)
-    total_spent = sum(df["Amount"].sum() if not df.empty else 0.0 for df in all_dfs.values())
-    total_remaining = total_month_budget - total_spent
-    st.metric("תקציב חודשי כולל", f"{total_month_budget:.2f}")
-    st.metric("סך ההוצאות עד כה", f"{total_spent:.2f}")
-    st.metric("יתרה כוללת", f"{total_remaining:.2f}")
+elif page == "הוצאות שונות":
+    st.header("הוצאות שונות")
+    df = read_expenses_df(sh, OTHER_SHEET)
+    remaining = float(other_budget) - df["amount"].sum()
+    st.subheader(f"יתרת הוצאות שונות: {remaining:.2f}")
+    with st.form("add_other_form"):
+        desc = st.text_input("פירוט ההוצאה")
+        amt = st.number_input("סכום ששולם", min_value=0.0, step=1.0)
+        add = st.form_submit_button("הוסף הוצאה")
+        if add:
+            append_expense(sh, OTHER_SHEET, desc, amt)
+            st.experimental_rerun()
+    st.markdown("---")
+    st.dataframe(df)
+
+elif page == "סיכום והגדרות":
+    st.header(f"סיכום — {month_name}")
+    # חישובי סיכום
+    total_budget = sum([float(weeks[f"week{i}"] or 0) for i in range(1,6)]) + float(other_budget or 0)
+    total_spent = 0
+    for name in WEEK_SHEETS + [OTHER_SHEET]:
+        d = read_expenses_df(sh, name)
+        total_spent += d["amount"].sum()
+    remaining_total = total_budget - total_spent
+
+    st.metric("תקציב חודשי כולל", f"{total_budget:.2f}")
+    st.metric("סה""כ הוצא עד כה", f"{total_spent:.2f}")
+    st.metric("יתרה עד סוף התקציב", f"{remaining_total:.2f}")
 
     st.markdown("---")
-    st.subheader("איפוס נתונים")
-    st.write("כפתור זה יאפס את כל ההוצאות ויאפס את התקציבים. יש אישור כפול לפני ביצוע.")
-    if "confirm_reset_step" not in st.session_state:
-        st.session_state["confirm_reset_step"] = 0
-    if st.button("התחל איפוס נתונים"):
-        st.session_state["confirm_reset_step"] = 1
-    if st.session_state["confirm_reset_step"] == 1:
-        st.warning("האם אתה בטוח? פעולה זו תמחק את כל ההוצאות ותאפס תקציבים")
-        cols = st.columns(2)
-        if cols[0].button("אישור ולמחוק הכל"):
-            # clear expense sheets
-            for name in WEEK_SHEETS + [MISC_SHEET]:
-                clear_expenses(sh, name)
-            # reset budgets to zeros
-            zero_budgets = {f"Week{i+1}":0 for i in range(5)}
-            zero_budgets["Misc_Budget"] = 0
-            write_budgets(sh, zero_budgets, month=datetime.now().strftime("%Y-%m"))
-            st.success("הנתונים אופסו בהצלחה")
-            st.session_state["confirm_reset_step"] = 0
-        if cols[1].button("ביטול"):
-            st.session_state["confirm_reset_step"] = 0
+    st.subheader("כלים")
+    if st.button("איפוס כל הנתונים והגדרות"):
+        if st.confirm("האם אתה בטוח שברצונך לאפס את תקציב והוצאות? פעולה זו תמחוק את הנתונים!"):
+            reset_all(sh)
+            st.success("הנתונים אופסו")
+            st.experimental_rerun()
 
-    st.markdown("---")
-    st.subheader("המלצות ושיפורים")
-    st.write("- הוספת קטגוריות חכמות (מזון, דלק, חשמל) עם ויזואליזציה.")
-    st.write("- הוספת גרפים שבועיים / חודשי עם התראות כאשר התקציב קרוב לסיום.")
-    st.write("- לתמיכה מרובה משתמשים — הוספת טבלת משתמשים וזיהוי באמצעות אימייל.")
+    st.markdown("\n\nהערה: נתונים נשמרים בגיליון גוגל שאליו שירות ה-API של האפליקציה מורשה לגשת.")
+```
 
-# End of file
+---
+
+## FILE: requirements.txt
+
+```
+streamlit>=1.20
+gspread>=5.8
+google-auth>=2.0
+pandas
+```
+
+---
+
+## FILE: .streamlit/secrets.toml.example
+
+```toml
+# *אל תלכליל את הקובץ secrets.toml בריפוזיטורי ציבורי.*
+# זהו דוגמה שמראה איך למלא את הסודות. עליך להעתיק ולמלא את הערכים ב- Streamlit Cloud UI
+
+[general]
+# ניתן לשים כאן ערכים כלליים אם תרצה
+
+[gcp_service_account]
+# העתק את ה- JSON של מפתח חשבון השירות (service account) כמו שמופיע בקובץ שהורדת מ- GCP.
+# TOML תומך בטבלאות — ניתן להעתיק שדות מה-JSON כערכים בטבלה זו.
+# דוגמא שדות:
+# type = "service_account"
+# project_id = "your-project-id"
+# private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+# client_email = "...@...iam.gserviceaccount.com"
+# client_id = "..."
+
+# במקום להעתיק שדות אלה ידנית ל- secrets.toml, ניתן פשוט להעלות את מפתח ה-JSON דרך ממשק Streamlit Cloud
+
+# שנשתמש בו בקוד כ- st.secrets["gcp_service_account"]
+
+gsheet_key = "PASTE_YOUR_SPREADSHEET_ID_HERE"
+```
+
+---
+
+## FILE: README.md
+
+```
+# Streamlit Home Expense Manager
+
+הוראות מהירות לפריסה:
+1. צור ריפוזיטורי ב-GitHub ועלה את הקבצים במחלקה הראשית.
+2. צרו Google Spreadsheet חדש. העתק את מזהה הגיליון (החלק שבין `/d/` ו-`/edit` ב-URL`) והדבק ב- secrets.
+3. צור פרויקט ב-Google Cloud, אפשר את Google Sheets API, צור Service Account, הורד מפתח JSON.
+4. שתף את ה-Google Sheet עם כתובת ה-client_email של חשבון השירות שהורדת (הרשאת עריכה).
+5. הוסף ב-Streamlit Cloud את הסודות (או העלה secrets.toml) — הוסף את מפתח השירות ו-gsheet_key.
+6. חברו את ה-RIPOSITORI שלכם אל Streamlit Community Cloud והפנו לאותו ריפו.
+
+(הוראות מפורטות בתוך המדריך המצורף למשתמש)
+```
+
+---
+
+# סיום הקבצים
+
+העתק את כל הקבצים הללו אל ריפוזיטורי GitHub ובצע Push. לאחר מכן עקוב אחרי הוראות ה-README לשם פריסה ל-Streamlit Community Cloud.
